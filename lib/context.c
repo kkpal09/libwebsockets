@@ -973,6 +973,19 @@ lws_create_context(struct lws_context_creation_info *info)
 	context->lws_event_sigint_cb = &lws_event_sigint_cb;
 #endif /* LWS_USE_LIBEVENT */
 
+#if defined(LWS_WITH_PEER_LIMITS)
+	/* scale the peer hash table according to the max fds for the process,
+	 * so that the max list depth averages 16.  Eg, 1024 fd -> 64,
+	 * 102400 fd -> 6400
+	 */
+	context->pl_hash_elements =
+		(context->count_threads * context->fd_limit_per_thread) / 16;
+	context->pl_hash_table = lws_zalloc(sizeof(struct lws_peer *) *
+			context->pl_hash_elements);
+	context->ip_limit_ah = info->ip_limit_ah;
+	context->ip_limit_wsi = info->ip_limit_wsi;
+#endif
+
 	lwsl_info(" mem: context:         %5lu bytes (%ld ctx + (%ld thr x %d))\n",
 		  (long)sizeof(struct lws_context) +
 		  (context->count_threads * context->pt_serv_buf_size),
@@ -1455,6 +1468,9 @@ LWS_VISIBLE void
 lws_context_destroy2(struct lws_context *context)
 {
 	struct lws_vhost *vh = NULL, *vh1;
+#if defined(LWS_WITH_PEER_LIMITS)
+	int n;
+#endif
 
 	lwsl_notice("%s: ctx %p\n", __func__, context);
 
@@ -1480,6 +1496,18 @@ lws_context_destroy2(struct lws_context *context)
 
 	lws_ssl_context_destroy(context);
 	lws_plat_context_late_destroy(context);
+
+#if defined(LWS_WITH_PEER_LIMITS)
+	for (n = 0; n < context->pl_hash_elements; n++)	{
+		lws_start_foreach_llp(struct lws_peer **, peer, context->pl_hash_table[n]) {
+			struct lws_peer *df = *peer;
+			*peer = df->next;
+			lws_free(df);
+			continue;
+		} lws_end_foreach_llp(peer, next);
+	}
+	lws_free(context->pl_hash_table);
+#endif
 
 	if (context->external_baggage_free_on_destroy)
 		free(context->external_baggage_free_on_destroy);

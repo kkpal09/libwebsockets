@@ -931,6 +931,26 @@ struct lws_deferred_free
 	void *payload;
 };
 
+typedef union {
+#ifdef LWS_USE_IPV6
+	struct sockaddr_in6 sa6;
+#endif
+	struct sockaddr_in sa4;
+} sockaddr46;
+
+
+#if defined(LWS_WITH_PEER_LIMITS)
+struct lws_peer {
+	struct lws_peer *next;
+
+	sockaddr46 sa46;
+	uint32_t count_wsi;
+	uint32_t count_ah;
+	uint32_t hash;
+	uint8_t af;
+};
+#endif
+
 /*
  * the rest is managed per-context, that includes
  *
@@ -966,6 +986,9 @@ struct lws_context {
 	struct lws_vhost *vhost_pending_destruction_list;
 	struct lws_plugin *plugin_list;
 	struct lws_deferred_free *deferred_free_list;
+#if defined(LWS_WITH_PEER_LIMITS)
+	struct lws_peer **pl_hash_table;
+#endif
 
 	void *external_baggage_free_on_destroy;
 	const struct lws_token_limits *token_limits;
@@ -1033,7 +1056,12 @@ struct lws_context {
 	int max_http_header_data;
 	int simultaneous_ssl_restriction;
 	int simultaneous_ssl;
-
+#if defined(LWS_WITH_PEER_LIMITS)
+	uint32_t pl_hash_elements;
+	uint32_t count_peers;
+	unsigned short ip_limit_ah;
+	unsigned short ip_limit_wsi;
+#endif
 	unsigned int deprecated:1;
 	unsigned int being_destroyed:1;
 	unsigned int being_destroyed1:1;
@@ -1056,6 +1084,7 @@ struct lws_context {
 	short server_string_len;
 	unsigned short ws_ping_pong_interval;
 	unsigned short deprecation_pending_listen_close_count;
+
 	uint8_t max_fi;
 };
 
@@ -1197,13 +1226,6 @@ LWS_EXTERN void lws_feature_status_libevent(struct lws_context_creation_info *in
 #else
 #define LWS_UNIX_SOCK_ENABLED(vhost) (0)
 #endif
-
-typedef union {
-#ifdef LWS_USE_IPV6
-	struct sockaddr_in6 sa6;
-#endif
-	struct sockaddr_in sa4;
-} sockaddr46;
 
 enum uri_path_states {
 	URIPS_IDLE,
@@ -1591,6 +1613,9 @@ struct lws {
 #if defined(LWS_USE_LIBEV) || defined(LWS_USE_LIBEVENT)
 	struct lws_io_watcher w_write;
 #endif
+#ifdef LWS_WITH_ACCESS_LOG
+	struct lws_access_log access_log;
+#endif
 	time_t pending_timeout_limit;
 
 	/* pointers */
@@ -1607,9 +1632,10 @@ struct lws {
 	struct lws **same_vh_protocol_prev, *same_vh_protocol_next;
 	struct lws *timeout_list;
 	struct lws **timeout_list_prev;
-#ifdef LWS_WITH_ACCESS_LOG
-	struct lws_access_log access_log;
+#if defined(LWS_WITH_PEER_LIMITS)
+	struct lws_peer *peer;
 #endif
+
 	void *user_space;
 	void *opaque_parent_data;
 	/* rxflow handling */
@@ -2286,6 +2312,15 @@ static inline uint64_t lws_stats_atomic_max(struct lws_context * context,
 /* socks */
 void socks_generate_msg(struct lws *wsi, enum socks_msg_type type,
 			ssize_t *msg_len);
+
+#if defined(LWS_WITH_PEER_LIMITS)
+void
+lws_peer_track_wsi_close(struct lws_context *context, struct lws_peer *peer);
+int
+lws_peer_confirm_ah_attach_ok(struct lws_context *context, struct lws_peer *peer);
+void
+lws_peer_track_ah_detach(struct lws_context *context, struct lws_peer *peer);
+#endif
 
 #ifdef __cplusplus
 };

@@ -1787,6 +1787,136 @@ bail_nuke_ah:
 	return 1;
 }
 
+#if defined(LWS_WITH_PEER_LIMITS)
+
+static struct lws_peer *
+lws_get_or_create_peer(struct lws_context *context, lws_sockfd_type sockfd)
+{
+	sockaddr46 sa46;
+	socklen_t len;
+	void *p, *q, *q1;
+	uint8_t *q8;
+	struct lws_peer *peer;
+	uint32_t hash = 0;
+	int n, af = AF_INET;
+
+#ifdef LWS_USE_IPV6
+	if (LWS_IPV6_ENABLED(wsi->vhost)) {
+		len = sizeof(sa46.sa6);
+		p = &sa46.sa6;
+		q = &sa46.sa6.sin6_addr;
+		af = AF_INET6;
+	} else
+#endif
+	{
+		len = sizeof(sa46.sa4);
+		p = &sa46.sa4;
+		q = &sa46.sa4.sin_addr;
+	}
+	if (getpeername(sockfd, p, &len)) {
+		q = "unknown";
+		len = 7;
+	}
+
+	q8 = q;
+	for (n = 0; n < len; n++)
+		hash = (((hash << 4) | (hash >> 28)) * n) ^ q8[n];
+
+	hash = hash % context->pl_hash_elements;
+
+	lws_start_foreach_ll(struct lws_peer *, peer, context->pl_hash_table[hash]) {
+#ifdef LWS_USE_IPV6
+		if (peer->af == AF_INET) {
+#endif
+			len = 4;
+			q1 = &peer->sa46.sa4.sin_addr;
+#ifdef LWS_USE_IPV6
+		} else {
+			len = 16;
+			q1 = &peer->sa46.sa6.sin6_addr;
+		}
+#endif
+		if (!memcmp(q, q1, len)) {
+			lwsl_notice("%s: found peer\n", __func__);
+
+			return peer;
+		}
+	} lws_end_foreach_ll(peer, next);
+
+	lwsl_notice("creating new peer\n");
+
+	peer = lws_zalloc(sizeof(*peer));
+	if (!peer)
+		return NULL;
+
+	context->count_peers++;
+	peer->next = context->pl_hash_table[hash];
+	peer->hash = hash;
+	peer->af = af;
+	context->pl_hash_table[hash] = peer;
+
+	memcpy(&peer->sa46, &sa46, sizeof(sa46));
+
+	return peer;
+}
+
+static int
+lws_destroy_peer(struct lws_context *context, struct lws_peer *peer)
+{
+	lws_start_foreach_llp(struct lws_peer **, p, context->pl_hash_table[peer->hash]) {
+		if (*p == peer) {
+			struct lws_peer *df = *p;
+			*p = df->next;
+			lws_free(df);
+			context->count_peers--;
+
+			return 0;
+		}
+	} lws_end_foreach_llp(p, next);
+
+	return 1;
+}
+
+void
+lws_peer_track_wsi_close(struct lws_context *context, struct lws_peer *peer)
+{
+	if (!peer)
+		return;
+
+	assert(peer->count_wsi);
+	peer->count_wsi--;
+	if (!peer->count_wsi && !peer->count_ah)
+		lws_destroy_peer(context, peer);
+}
+
+int
+lws_peer_confirm_ah_attach_ok(struct lws_context *context, struct lws_peer *peer)
+{
+	if (!peer)
+		return 0;
+
+	if (context->ip_limit_ah && peer->count_ah >= context->ip_limit_ah) {
+		lwsl_notice("peer reached ah limit %d, deferring\n",
+				context->ip_limit_ah);
+
+		return 1;
+	}
+
+	return 0;
+}
+
+void
+lws_peer_track_ah_detach(struct lws_context *context, struct lws_peer *peer)
+{
+	if (!peer)
+		return;
+
+	assert(peer->count_ah);
+	peer->count_ah--;
+}
+
+#endif
+
 static int
 lws_get_idlest_tsi(struct lws_context *context)
 {
@@ -1964,15 +2094,39 @@ lws_adopt_descriptor_vhost(struct lws_vhost *vh, lws_adoption_type type,
 			   struct lws *parent)
 {
 	struct lws_context *context = vh->context;
-	struct lws *new_wsi = lws_create_new_server_wsi(vh);
+	struct lws *new_wsi;
 	struct lws_context_per_thread *pt;
 	int n, ssl = 0;
 
+#if defined(LWS_WITH_PEER_LIMITS)
+	struct lws_peer *peer = NULL;
+
+	if (type & LWS_ADOPT_SOCKET && !(type & LWS_ADOPT_WS_PARENTIO)) {
+		peer = lws_get_or_create_peer(context, fd.sockfd);
+
+		if (!peer) {
+			lwsl_err("OOM creating peer\n");
+			return NULL;
+		}
+		if (context->ip_limit_wsi && peer->count_wsi >= context->ip_limit_wsi) {
+			lwsl_notice("Peer reached wsi limit %d\n",
+					context->ip_limit_wsi);
+
+			return NULL;
+		}
+		peer->count_wsi++;
+	}
+#endif
+
+	new_wsi = lws_create_new_server_wsi(vh);
 	if (!new_wsi) {
 		if (type & LWS_ADOPT_SOCKET && !(type & LWS_ADOPT_WS_PARENTIO))
 			compatible_close(fd.sockfd);
 		return NULL;
 	}
+#if defined(LWS_WITH_PEER_LIMITS)
+	new_wsi->peer = peer;
+#endif
 	pt = &context->pt[(int)new_wsi->tsi];
 	lws_stats_atomic_bump(context, pt, LWSSTATS_C_CONNECTIONS, 1);
 

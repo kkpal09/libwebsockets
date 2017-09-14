@@ -99,6 +99,11 @@ lws_free_wsi(struct lws *wsi)
 			pt->ah_count_in_use--;
 		}
 	}
+
+#if defined(LWS_WITH_PEER_LIMITS)
+	lws_peer_track_wsi_close(wsi->context, wsi->peer);
+#endif
+
 	lws_pt_unlock(pt);
 
 	/* since we will destroy the wsi, make absolutely sure now */
@@ -3633,9 +3638,7 @@ lws_stats_log_dump(struct lws_context *context)
 
 	lwsl_notice("Live wsi:                                   %8d\n", context->count_wsi_allocated);
 
-#if defined(LWS_WITH_STATS)
 	context->updated = 1;
-#endif
 
 	while (v) {
 		if (v->lserv_wsi) {
@@ -3676,6 +3679,27 @@ lws_stats_log_dump(struct lws_context *context)
 
 		lws_pt_unlock(pt);
 	}
+
+#if defined(LWS_WITH_PEER_LIMITS)
+	for (n = 0; n < context->pl_hash_elements; n++)	{
+		char buf[72];
+
+		lws_start_foreach_llp(struct lws_peer **, peer, context->pl_hash_table[n]) {
+			struct lws_peer *df = *peer;
+			void *p = &df->sa46.sa4.sin_addr;
+
+#ifdef LWS_USE_IPV6
+			if (df->af == AF_INET6)
+				p = &df->sa46.sa6.sin6_addr;
+#endif
+			if (!lws_plat_inet_ntop(df->af, p, buf, sizeof(buf) - 1))
+				strcpy(buf, "unknown");
+			lwsl_notice("  peer %s: wsi: %d, ah:%d\n", buf,
+					df->count_wsi, df->count_ah);
+
+		} lws_end_foreach_llp(peer, next);
+	}
+#endif
 
 	lwsl_notice("\n");
 }
