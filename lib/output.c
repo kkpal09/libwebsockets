@@ -46,8 +46,6 @@ lws_0405_frame_mask_generate(struct lws *wsi)
 	return 0;
 }
 
-#ifdef _DEBUG
-
 LWS_VISIBLE void lwsl_hexdump(void *vbuf, size_t len)
 {
 	unsigned char *buf = (unsigned char *)vbuf;
@@ -82,11 +80,10 @@ LWS_VISIBLE void lwsl_hexdump(void *vbuf, size_t len)
 		*p++ = '\n';
 		*p = '\0';
 		lwsl_debug("%s", line);
+		(void)line;
 	}
 	lwsl_debug("\n");
 }
-
-#endif
 
 /*
  * notice this returns number of bytes consumed, or -1
