@@ -57,6 +57,8 @@ lws_genhash_init(struct lws_genhash_ctx *ctx, int type)
 		mbedtls_sha512_init(&ctx->u.sha512);
 		mbedtls_sha512_starts(&ctx->u.sha512, 0);
 		break;
+	default:
+		return 1;
 	}
 #else
 	ctx->mdctx = EVP_MD_CTX_create();
@@ -73,6 +75,8 @@ lws_genhash_init(struct lws_genhash_ctx *ctx, int type)
 	case LWS_GENHASH_TYPE_SHA512:
 		ctx->evp_type = EVP_sha512();
 		break;
+	default:
+		return 1;
 	}
 
 	if (EVP_DigestInit_ex(ctx->mdctx, ctx->evp_type, NULL) != 1) {
